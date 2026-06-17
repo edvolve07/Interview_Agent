@@ -76,7 +76,7 @@ WORKDIR /app
 # Copy the application and virtual environment with correct ownership in a single layer
 # This avoids expensive recursive chown and excludes build tools from the final image
 COPY --from=build --chown=appuser:appuser /app /app
-
+RUN chmod -R 755 /app/.venv
 # Switch to the non-privileged user for all subsequent operations
 # This improves security by not running as root
 USER appuser
