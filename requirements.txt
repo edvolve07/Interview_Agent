@@ -1,0 +1,6 @@
+livekit
+livekit-agents
+livekit-plugins-nvidia
+livekit-plugins-silero
+livekit-plugins-openai
+piper_tts
