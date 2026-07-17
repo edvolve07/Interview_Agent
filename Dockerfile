@@ -5,7 +5,7 @@
 # Use the official UV Python base image with Python 3.13 on Debian Bookworm
 # UV is a fast Python package manager that provides better performance than pip
 # We use the slim variant to keep the image size smaller while still having essential tools
-ARG PYTHON_VERSION=3.13
+ARG PYTHON_VERSION=3.14
 FROM ghcr.io/astral-sh/uv:python${PYTHON_VERSION}-bookworm-slim AS base
 
 # Keeps Python from buffering stdout and stderr to avoid situations where
@@ -50,7 +50,7 @@ RUN uv sync --locked
 # This runs before COPY . . so the download layer is cached across code-only changes.
 # The module-level command discovers installed livekit-plugins-* packages without
 # loading your agent code.
-RUN uv run --module livekit.agents download-files
+# RUN uv run --module livekit.agents download-files
 
 # Copy all remaining application files into the container
 # This includes source code, configuration files, and dependency specifications
