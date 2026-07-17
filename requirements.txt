@@ -4,3 +4,8 @@ livekit-plugins-nvidia
 livekit-plugins-silero
 livekit-plugins-openai
 piper_tts
+python-dotenv
+httpx
+numpy
+Pillow
+groq
