@@ -1,0 +1,17 @@
+{
+  "_note": "Stop hook auto-runs cost-track at session end so the cost-tracking namespace stays populated without users remembering to run `/cost-track` manually. TRACK_QUIET=1 suppresses the markdown summary (avoid spamming on every Stop). `|| true` ensures a track failure NEVER blocks session end — analytics data is best-effort, not load-bearing.",
+  "_platform": "posix",
+  "_platform_note": "POSIX hooks (bash + node). Windows users continue to invoke `cost-track` manually via the slash command (the Stop hook silently no-ops on a non-bash shell).",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/bash -c 'TRACK_QUIET=1 node \"${CLAUDE_PLUGIN_ROOT}/scripts/track.mjs\" >/dev/null 2>&1 || true'"
+          }
+        ]
+      }
+    ]
+  }
+}

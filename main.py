@@ -4,6 +4,7 @@ import asyncio
 import logging
 import re
 import time
+from typing import Dict, Any, Optional
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
@@ -27,29 +28,235 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("interview-agent")
 
+# Core Agent Identity - Permanent
+CORE_IDENTITY = """
+You are EdVols, an AI Communication Coach.
+Your mission is to help students improve their communication skills through realistic conversations, role-playing, practice sessions, coaching, and constructive feedback.
+You are encouraging, supportive, patient, and adaptive.
+You are NOT primarily an interviewer.
+Interview simulations are only one of many communication scenarios you support.
+"""
+
+# Mode Definitions
+MODES = {
+    "general": {
+        "name": "General Communication",
+        "description": "Practicing everyday communication scenarios",
+        "roles": ["Friend", "Classmate", "Colleague", "Team member", "Manager", "Customer", "Client", "Networking contact", "Audience member", "Mentor"],
+        "objective": "Engage in natural, spontaneous conversation to build confidence and skills in everyday interactions",
+        "style": "Casual, friendly, and conversational. Focus on building rapport and practicing active listening.",
+        "coaching_focus": ["Clarity and articulation", "Active listening skills", "Conversational flow", "Emotional intelligence", "Adaptability to different social contexts"]
+    },
+    "interview_prep": {
+        "name": "Interview Preparation",
+        "description": "Practicing job interview scenarios",
+        "roles": ["Professional interviewer (varies by industry and role)"],
+        "objective": "Develop interview-specific communication skills including structured responses, professional presence, and targeted communication",
+        "style": "Professional and structured, but still conversational. Follow interview conventions while maintaining authenticity.",
+        "coaching_focus": ["Answer structure (STAR method)", "Professional tone and body language", "Concise and relevant responses", "Confidence under pressure", "Tailoring responses to the role"]
+    }
+}
+
+# Scenario-specific behavioral guidelines
+SCENARIO_BEHAVIORS = {
+    # General Communication Scenarios
+    "Casual Conversation": {
+        "role": "Friend",
+        "behavior": "Casual, friendly, and relaxed. Share personal anecdotes and ask about their day.",
+        "focus": "Building rapport and practicing everyday social interactions"
+    },
+    "Class Discussion": {
+        "role": "Classmate",
+        "behavior": "Engaged peer discussing academic topics. Ask thoughtful questions and share perspectives.",
+        "focus": "Academic discourse and collaborative learning communication"
+    },
+    "Team Collaboration": {
+        "role": "Colleague",
+        "behavior": "Collaborative team member working on a project. Discuss ideas, give feedback, and coordinate tasks.",
+        "focus": "Workplace collaboration and team communication"
+    },
+    "Manager Feedback": {
+        "role": "Manager",
+        "behavior": "Providing constructive feedback on performance. Balance positive reinforcement with areas for improvement.",
+        "focus": "Receiving and responding to professional feedback"
+    },
+    "Customer Service": {
+        "role": "Customer",
+        "behavior": "Customer with a concern or inquiry. Express needs clearly and respond to solutions offered.",
+        "focus": "Customer service interactions and problem-solving communication"
+    },
+    "Networking Event": {
+        "role": "Networking contact",
+        "behavior": "Professional at a networking event. Focus on building connections and exchanging professional information.",
+        "focus": "Professional networking and relationship building"
+    },
+    "Audience Member": {
+        "role": "Audience member",
+        "behavior": "Engaged audience member watching a presentation. Show interest through verbal and non-verbal cues.",
+        "focus": "Public speaking engagement and presentation skills"
+    },
+    "Mentorship Discussion": {
+        "role": "Mentor",
+        "behavior": "Experienced mentor providing guidance. Ask about goals and challenges while offering advice.",
+        "focus": "Mentorship conversations and career guidance discussions"
+    },
+    # Interview Preparation Scenarios (keeping existing categories)
+    "Tell Me About Yourself": {
+        "role": "Professional interviewer",
+        "behavior": "Warm but professional interviewer starting the conversation. Look for a coherent narrative connecting past experiences to the role.",
+        "focus": "Personal branding and career storytelling"
+    },
+    "Behavioral Questions (STAR)": {
+        "role": "Professional interviewer",
+        "behavior": "Structured interviewer seeking specific examples using the STAR method. Probe for details and learning outcomes.",
+        "focus": "Behavioral interviewing and evidence-based responses"
+    },
+    "Strengths & Weaknesses": {
+        "role": "Professional interviewer",
+        "behavior": "Insightful interviewer assessing self-awareness and honesty. Look for genuine reflection and growth mindset.",
+        "focus": "Self-awareness and authentic self-assessment"
+    },
+    "Why This Role / Company": {
+        "role": "Professional interviewer",
+        "behavior": "Engaged interviewer evaluating motivation and cultural fit. Look for specific knowledge and genuine interest.",
+        "focus": "Motivation and organizational fit assessment"
+    },
+    "Technical Explanations": {
+        "role": "Technical interviewer",
+        "behavior": "Knowledgeable interviewer assessing depth of understanding. Ask follow-up questions to probe technical knowledge.",
+        "focus": "Technical communication and knowledge transfer"
+    },
+    "Handling Difficult Questions": {
+        "role": "Skilled interviewer",
+        "behavior": "Experienced interviewer posing challenging questions. Evaluate composure, problem-solving, and professionalism under pressure.",
+        "focus": "Resilience and thoughtful responses under pressure"
+    },
+    "Career Goals & Aspirations": {
+        "role": "Forward-looking interviewer",
+        "behavior": "Interested interviewer exploring long-term vision and ambition. Look for clarity of purpose and realistic planning.",
+        "focus": "Career planning and aspirational communication"
+    },
+    "Salary & Negotiation Talk": {
+        "role": "Negotiation-savvy interviewer",
+        "behavior": "Business-minded interviewer discussing compensation. Evaluate preparation, market knowledge, and collaborative problem-solving.",
+        "focus": "Negotiation skills and professional self-advocacy"
+    }
+}
+
+
+def get_mode_from_metadata(metadata: dict) -> str:
+    """Extract mode from metadata, defaulting to general communication"""
+    mode = metadata.get("mode", "general")
+    if mode not in MODES:
+        mode = "general"
+    return mode
+
+
+def get_scenario_behavior(category: str, mode: str) -> dict:
+    """Get scenario-specific behavior guidelines for a category and mode"""
+    # Check if we have specific behavior defined
+    if category in SCENARIO_BEHAVIORS:
+        return SCENARIO_BEHAVIORS[category]
+
+    # Fallback to generic behavior based on mode
+    mode_info = MODES.get(mode, MODES["general"])
+    role = "Friend" if mode == "general" else "Professional interviewer"
+
+    if mode == "general":
+        behavior = f"Engaging in a {category.lower()} conversation as a {role.lower()}."
+        focus = f"Practicing communication skills in {category.lower()} context"
+    else:
+        behavior = f"Conducting a {category.lower()} interview as a professional interviewer."
+        focus = f"Developing interview skills for {category.lower()}"
+
+    return {
+        "role": role,
+        "behavior": behavior,
+        "focus": focus
+    }
+
+
+def build_coaching_prompt(category: str, mode: str, user_identity: str, exchange_count: int) -> str:
+    """Build the agent's prompt based on core identity, mode, scenario, and session context"""
+    mode_info = MODES[mode]
+    scenario = get_scenario_behavior(category, mode)
+
+    # Build the core identity section
+    core_identity = CORE_IDENTITY.strip()
+
+    # Build the mode-specific section
+    mode_section = f"""
+Current Mode: {mode_info['name']}
+Objective: {mode_info['objective']}
+Your Role: {scenario['role']}
+Role Behavior: {scenario['behavior']}
+Conversation Style: {mode_info['style']}
+"""
+
+    # Build the coaching responsibilities section
+    coaching_section = """
+COACHING RESPONSIBILITIES:
+- Continuously observe: confidence, clarity, fluency, vocabulary, grammar, tone, listening, professionalism, response structure, speaking pace, filler words, engagement
+- Provide gentle, constructive feedback only when appropriate and beneficial
+- Do not interrupt excessively - let the user express their thoughts
+- Ask follow-up questions naturally based on what the user says
+- React authentically to user responses with appropriate verbal cues
+- Share opinions and perspectives when it enhances the conversation
+- Encourage the user to elaborate and explore topics in depth
+- After the session, provide comprehensive coaching feedback covering all observed communication aspects
+"""
+
+    # Build the conversation style guidelines
+    style_section = f"""
+CONVERSATION STYLE GUIDELINES:
+- Avoid rigid, scripted questioning patterns
+- Respond naturally to what the user says, like a real {scenario['role'].lower()} would
+- Ask open-ended follow-up questions that encourage elaboration
+- Show genuine curiosity about the user's experiences and perspectives
+- Mirror the user's communication style while maintaining your role
+- Use natural conversational fillers and expressions appropriately
+- Encourage longer, more thoughtful responses when beneficial
+- If in {mode} mode, remember this is practice for real-world {mode_info['description'].lower()}
+"""
+
+    # Add vision context placeholder
+    vision_section = "\nVISUAL CONTEXT: [Visual information will be provided here when available]"
+
+    # Combine all sections
+    full_prompt = f"""{core_identity}
+
+{mode_section.strip()}
+
+{coaching_section.strip()}
+
+{style_section.strip()}{vision_section}
+
+IMPORTANT:
+- Stay in character as {scenario['role']} throughout the conversation
+- Your primary goal is to help {user_identity} improve their communication skills through this interaction
+- Keep your responses conversational and natural - typically 1-3 sentences unless the situation calls for more
+- Always end your turn with an invitation for the user to respond (a question, prompt, or expression that encourages continuation)
+"""
+
+    return full_prompt.strip()
+
 
 class InterviewAgent(Agent):
-    def __init__(self, category: str, user_identity: str):
-        is_interview = _is_interview(category)
-        role = "interviewer" if is_interview else "communication coach"
-        context = f"conducting a {category} interview" if is_interview else f"practicing {category} communication scenarios"
-        super().__init__(
-            instructions=f"""
-            You are an AI {role} {context}.
-            - Speak naturally, like a real person in this situation
-            - Use conversational language and occasional fillers ("great", "interesting", "I see")
-            - Ask one question or prompt at a time
-            - After the person responds, give brief positive acknowledgment then the next prompt
-            - Stay encouraging and warm
-            - Never answer questions yourself
-            - Keep responses to 1-3 sentences
-            """
-        )
+    def __init__(self, category: str, user_identity: str, metadata: dict = None):
         self.category = category
         self.user_identity = user_identity
+        self.metadata = metadata or {}
+        self.mode = get_mode_from_metadata(self.metadata)
         self.exchange_count = 0
         self.max_exchanges = 6
         self.current_emotion = {}
+
+        # Build dynamic instructions
+        instructions = build_coaching_prompt(category, self.mode, user_identity, self.exchange_count)
+
+        super().__init__(instructions=instructions)
+
+        logger.info(f"Initialized InterviewAgent - Category: {category}, Mode: {self.mode}, User: {user_identity}")
 
 
 EVAL_CLIENT = AsyncOpenAI(
@@ -58,21 +265,6 @@ EVAL_CLIENT = AsyncOpenAI(
 )
 
 EVAL_MODEL = "meta/llama-3.1-8b-instruct"
-
-INTERVIEW_CATEGORIES = [
-    "Tell Me About Yourself",
-    "Behavioral Questions (STAR)",
-    "Strengths & Weaknesses",
-    "Why This Role / Company",
-    "Technical Explanations",
-    "Handling Difficult Questions",
-    "Career Goals & Aspirations",
-    "Salary & Negotiation Talk",
-]
-
-
-def _is_interview(category: str) -> bool:
-    return category in INTERVIEW_CATEGORIES
 
 
 def _clean_json(text: str) -> str:
@@ -94,12 +286,32 @@ def send_data(room, payload: dict, identity: str = ""):
     )
 
 
-def _build_eval_prompt(
-    question: str,
-    answer: str,
+async def evaluate_user_response(
+    transcript: str,
+    exchange_count: int,
+    current_prompt: str,
+    category: str,
+    mode: str = "general",
+    video_context: str = "",
+) -> dict:
+    """
+    Evaluate user response with mode-appropriate criteria
+    """
+    # Build evaluation prompt based on mode
+    if mode == "interview_prep":
+        return await _evaluate_interview_response(transcript, exchange_count, current_prompt, category, video_context)
+    else:
+        return await _evaluate_general_response(transcript, exchange_count, current_prompt, category, video_context)
+
+
+async def _evaluate_interview_response(
+    transcript: str,
+    exchange_count: int,
+    current_prompt: str,
     category: str,
     video_context: str = "",
-) -> str:
+) -> dict:
+    """Evaluation focused on interview communication skills"""
     video_section = ""
     if video_context:
         video_section = f"""
@@ -111,66 +323,34 @@ Video context during the response: {video_context}
 - Use vision observations (if available) to inform scores
 """
 
-    is_interview = _is_interview(category)
-    if is_interview:
-        return f"""You are a strict interview coach evaluating a candidate's response.
+    prompt = f"""You are a communication coach evaluating interview communication skills.
 
 Category: {category}
 {video_section}
-Question: {question}
+Interview Question/Prompt: {current_prompt}
 
-Answer: {answer}
+User's Response: {transcript}
 
-Score 0-10 each:
-1. clarity — clear and articulate
-2. structure — logical flow
-3. conciseness — to the point
-4. relevance — on-topic
-5. confidence_tone — professional and confident
-
-Also provide:
-- strengths (1-2 items)
-- improvements (1-2 items)
-- feedback (one paragraph)
-- next_prompt (follow-up question)
-- real_world_tip (one actionable tip)
-
-Return ONLY valid JSON:
-{{"clarity":0,"structure":0,"conciseness":0,"relevance":0,"confidence_tone":0,"strengths":[],"improvements":[],"feedback":"","next_prompt":"","real_world_tip":""}}"""
-    return f"""You are a communication coach evaluating someone's response.
-
-Category: {category}
-{video_section}
-Prompt: {question}
-
-Response: {answer}
-
-Score 0-10 each:
-1. clarity — clear and articulate
-2. structure — logical flow
-3. conciseness — to the point
-4. relevance — on-topic
-5. confidence_tone — appropriate for the context
+Evaluate on these dimensions (0-10 each):
+1. clarity — clear and articulate expression
+2. structure — logical flow and organization (for behavioral: STAR method)
+3. conciseness — appropriately detailed without being verbose or too brief
+4. relevance — stays on topic and addresses the question/prompt
+5. confidence_tone — professional, assured, and appropriately assertive
+6. engagement — shows interest and involvement in the conversation
+7. listening_skills — demonstrates understanding through relevant responses
+8. professionalism — maintains appropriate professional demeanor
 
 Also provide:
-- strengths (1-2 items)
-- improvements (1-2 items)
-- feedback (one paragraph)
-- next_prompt (follow-up prompt)
-- real_world_tip (one actionable tip)
+- strengths (1-2 specific things done well)
+- improvements (1-2 specific, actionable suggestions)
+- feedback (one paragraph of coaching advice focused on interview communication)
+- next_prompt (natural follow-up question or prompt)
+- real_world_tip (one actionable tip for real interview situations)
 
 Return ONLY valid JSON:
-{{"clarity":0,"structure":0,"conciseness":0,"relevance":0,"confidence_tone":0,"strengths":[],"improvements":[],"feedback":"","next_prompt":"","real_world_tip":""}}"""
+{{"clarity":0,"structure":0,"conciseness":0,"relevance":0,"confidence_tone":0,"engagement":0,"listening_skills":0,"professionalism":0,"strengths":[],"improvements":[],"feedback":"","next_prompt":"","real_world_tip":""}}"""
 
-
-async def evaluate_user_response(
-    transcript: str,
-    exchange_count: int,
-    current_prompt: str,
-    category: str,
-    video_context: str = "",
-) -> dict:
-    prompt = _build_eval_prompt(current_prompt, transcript, category, video_context)
     try:
         resp = await EVAL_CLIENT.chat.completions.create(
             model=EVAL_MODEL,
@@ -184,17 +364,140 @@ async def evaluate_user_response(
         logger.error("Evaluation LLM call failed: %s", e)
         result = {}
 
-    for key in ["clarity", "structure", "conciseness", "relevance", "confidence_tone"]:
+    # Ensure all expected keys exist with sensible defaults
+    expected_keys = ["clarity", "structure", "conciseness", "relevance", "confidence_tone",
+                     "engagement", "listening_skills", "professionalism", "strengths", "improvements",
+                     "feedback", "next_prompt", "real_world_tip"]
+
+    for key in expected_keys:
+        if key not in result:
+            if key in ["clarity", "structure", "conciseness", "relevance", "confidence_tone",
+                       "engagement", "listening_skills", "professionalism"]:
+                result[key] = 5
+            elif key in ["strengths", "improvements"]:
+                result[key] = []
+            elif key in ["feedback", "next_prompt", "real_world_tip"]:
+                result[key] = "Keep practicing to improve your communication skills." if key == "feedback" else (
+                    "Can you tell me more about your experience?" if key == "next_prompt" else
+                    "Focus on being clear and specific in your responses."
+                )
+
+    # Clamp numeric scores
+    for key in ["clarity", "structure", "conciseness", "relevance", "confidence_tone",
+                "engagement", "listening_skills", "professionalism"]:
         result[key] = _clamp(result.get(key, 5))
+
+    # Ensure arrays are actually arrays
     for key in ["strengths", "improvements"]:
         if not isinstance(result.get(key), list):
             result[key] = [str(result[key])] if result.get(key) else []
-    if not isinstance(result.get("feedback"), str) or not result["feedback"].strip():
-        result["feedback"] = "Keep practicing to improve your communication skills."
-    if not isinstance(result.get("next_prompt"), str) or not result["next_prompt"].strip():
-        result["next_prompt"] = "Can you tell me more about a specific example from your experience?"
-    if not isinstance(result.get("real_world_tip"), str) or not result["real_world_tip"].strip():
-        result["real_world_tip"] = "In real situations, aim to be specific and provide concrete examples."
+
+    # Ensure strings are actually strings
+    for key in ["feedback", "next_prompt", "real_world_tip"]:
+        if not isinstance(result.get(key), str) or not result[key].strip():
+            result[key] = "Keep practicing to improve your communication skills." if key == "feedback" else (
+                "Can you tell me more about your experience?" if key == "next_prompt" else
+                "Focus on being clear and specific in your responses."
+            )
+
+    return result
+
+
+async def _evaluate_general_response(
+    transcript: str,
+    exchange_count: int,
+    current_prompt: str,
+    category: str,
+    video_context: str = "",
+) -> dict:
+    """Evaluation focused on general communication skills"""
+    video_section = ""
+    if video_context:
+        video_section = f"""
+Video context during the response: {video_context}
+
+- If the camera is ON and visible: assess eye contact, posture, lighting, and engagement
+- If lighting is dim, note it may affect perceived confidence
+- If screen share is ON: consider the person may be presenting, coding, or demonstrating
+- Use vision observations (if available) to inform scores
+"""
+
+    prompt = f"""You are a communication coach evaluating general communication skills.
+
+Scenario: {category}
+{video_section}
+Conversation Prompt: {current_prompt}
+
+User's Response: {transcript}
+
+Evaluate on these dimensions (0-10 each):
+1. clarity — clear and articulate expression
+2. coherence — logical and easy-to-follow flow of ideas
+3. engagement — shows interest and involvement in the conversation
+4. empathy — demonstrates understanding and consideration of others' perspectives
+5. adaptability — adjusts communication style appropriately to the context
+6. listening_skills — demonstrates understanding through relevant responses
+7. confidence — expresses ideas with appropriate assurance (not over or under-confident)
+8. authenticity — communicates genuinely and sincerely
+
+Also provide:
+- strengths (1-2 specific things done well)
+- improvements (1-2 specific, actionable suggestions)
+- feedback (one paragraph of coaching advice focused on general communication)
+- next_prompt (natural follow-up question or prompt to continue the conversation)
+- real_world_tip (one actionable tip for real-world situations like this)
+
+Return ONLY valid JSON:
+{{"clarity":0,"coherence":0,"engagement":0,"empathy":0,"adaptability":0,"listening_skills":0,"confidence":0,"authenticity":0,"strengths":[],"improvements":[],"feedback":"","next_prompt":"","real_world_tip":""}}"""
+
+    try:
+        resp = await EVAL_CLIENT.chat.completions.create(
+            model=EVAL_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        text = resp.choices[0].message.content or "{}"
+        result = json.loads(_clean_json(text))
+    except Exception as e:
+        logger.error("Evaluation LLM call failed: %s", e)
+        result = {}
+
+    # Ensure all expected keys exist with sensible defaults
+    expected_keys = ["clarity", "coherence", "engagement", "empathy", "adaptability",
+                     "listening_skills", "confidence", "authenticity", "strengths", "improvements",
+                     "feedback", "next_prompt", "real_world_tip"]
+
+    for key in expected_keys:
+        if key not in result:
+            if key in ["clarity", "coherence", "engagement", "empathy", "adaptability",
+                       "listening_skills", "confidence", "authenticity"]:
+                result[key] = 5
+            elif key in ["strengths", "improvements"]:
+                result[key] = []
+            elif key in ["feedback", "next_prompt", "real_world_tip"]:
+                result[key] = "Keep practicing to improve your communication skills." if key == "feedback" else (
+                    "That's interesting! Can you tell me more about that?" if key == "next_prompt" else
+                    "In real conversations, active listening and genuine curiosity go a long way."
+                )
+
+    # Clamp numeric scores
+    for key in ["clarity", "coherence", "engagement", "empathy", "adaptability",
+                "listening_skills", "confidence", "authenticity"]:
+        result[key] = _clamp(result.get(key, 5))
+
+    # Ensure arrays are actually arrays
+    for key in ["strengths", "improvements"]:
+        if not isinstance(result.get(key), list):
+            result[key] = [str(result[key])] if result.get(key) else []
+
+    # Ensure strings are actually strings
+    for key in ["feedback", "next_prompt", "real_world_tip"]:
+        if not isinstance(result.get(key), str) or not result[key].strip():
+            result[key] = "Keep practicing to improve your communication skills." if key == "feedback" else (
+                "That's interesting! Can you tell me more about that?" if key == "next_prompt" else
+                "In real conversations, active listening and genuine curiosity go a long way."
+            )
 
     return result
 
@@ -204,7 +507,7 @@ async def entrypoint(ctx: JobContext):
     category = metadata.get("category", "Tell Me About Yourself")
     user_identity = metadata.get("userIdentity", "")
 
-    logger.info("Starting interview: category=%s user=%s", category, user_identity)
+    logger.info("Starting session: category=%s mode=%s user=%s", category, metadata.get("mode", "general"), user_identity)
 
     await ctx.connect()
 
@@ -256,7 +559,7 @@ async def entrypoint(ctx: JobContext):
         video_sampler=video_sampler,
     )
 
-    agent = InterviewAgent(category, user_identity)
+    agent = InterviewAgent(category, user_identity, metadata)
     current_question = ""
 
     @session.on("agent_state_changed")
@@ -278,11 +581,13 @@ async def entrypoint(ctx: JobContext):
             try:
                 vision_ctx = vision_service.get_context()
 
+                mode = agent.mode
                 result = await evaluate_user_response(
                     transcript,
                     agent.exchange_count - 1,
                     current_question,
                     category,
+                    mode,
                     video_context=vision_ctx,
                 )
 
@@ -297,6 +602,24 @@ async def entrypoint(ctx: JobContext):
                     "confidence_tone": result.get("confidence_tone", 0),
                 }
 
+                # Add mode-specific fields to evaluation
+                if mode == "interview_prep":
+                    eval_entry.update({
+                        "engagement": result.get("engagement", 0),
+                        "listening_skills": result.get("listening_skills", 0),
+                        "professionalism": result.get("professionalism", 0),
+                    })
+                else:
+                    eval_entry.update({
+                        "coherence": result.get("coherence", 0),
+                        "engagement": result.get("engagement", 0),
+                        "empathy": result.get("empathy", 0),
+                        "adaptability": result.get("adaptability", 0),
+                        "listening_skills": result.get("listening_skills", 0),
+                        "confidence": result.get("confidence", 0),
+                        "authenticity": result.get("authenticity", 0),
+                    })
+
                 send_data(
                     ctx.room,
                     {
@@ -310,12 +633,13 @@ async def entrypoint(ctx: JobContext):
                         "next_prompt": current_question,
                         "is_last": is_last,
                         "video_context": vision_ctx,
+                        "mode": mode,
                     },
                     user_identity,
                 )
 
                 if is_last:
-                    logger.info("Interview complete for user %s", user_identity)
+                    logger.info("Session complete for user %s", user_identity)
                     send_data(ctx.room, {"type": "complete"}, user_identity)
                     ctx.shutdown()
 
@@ -333,7 +657,10 @@ async def entrypoint(ctx: JobContext):
             f"\n\nVisual context: {vision_service.get_context()}"
         )
 
-    if _is_interview(category):
+    mode = agent.mode
+    mode_name = MODES[mode]['name']
+
+    if mode == "interview_prep":
         await session.generate_reply(
             instructions=f"Greet the candidate warmly and ask the first interview question about {category}. Keep it natural and conversational.{vision_instructions}"
         )
