@@ -22,241 +22,35 @@ from vision import (
     VisionService,
     create_video_sampler,
 )
+from prompts import (
+    CORE_IDENTITY,
+    MODES,
+    SCENARIO_BEHAVIORS,
+    get_mode_from_metadata,
+    get_scenario_behavior,
+    build_coaching_prompt,
+    build_greeting_instructions,
+)
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("interview-agent")
 
-# Core Agent Identity - Permanent
-CORE_IDENTITY = """
-You are EdVols, an AI Communication Coach.
-Your mission is to help students improve their communication skills through realistic conversations, role-playing, practice sessions, coaching, and constructive feedback.
-You are encouraging, supportive, patient, and adaptive.
-You are NOT primarily an interviewer.
-Interview simulations are only one of many communication scenarios you support.
-"""
-
-# Mode Definitions
-MODES = {
-    "general": {
-        "name": "General Communication",
-        "description": "Practicing everyday communication scenarios",
-        "roles": ["Friend", "Classmate", "Colleague", "Team member", "Manager", "Customer", "Client", "Networking contact", "Audience member", "Mentor"],
-        "objective": "Engage in natural, spontaneous conversation to build confidence and skills in everyday interactions",
-        "style": "Casual, friendly, and conversational. Focus on building rapport and practicing active listening.",
-        "coaching_focus": ["Clarity and articulation", "Active listening skills", "Conversational flow", "Emotional intelligence", "Adaptability to different social contexts"]
-    },
-    "interview_prep": {
-        "name": "Interview Preparation",
-        "description": "Practicing job interview scenarios",
-        "roles": ["Professional interviewer (varies by industry and role)"],
-        "objective": "Develop interview-specific communication skills including structured responses, professional presence, and targeted communication",
-        "style": "Professional and structured, but still conversational. Follow interview conventions while maintaining authenticity.",
-        "coaching_focus": ["Answer structure (STAR method)", "Professional tone and body language", "Concise and relevant responses", "Confidence under pressure", "Tailoring responses to the role"]
-    }
-}
-
-# Scenario-specific behavioral guidelines
-SCENARIO_BEHAVIORS = {
-    # General Communication Scenarios
-    "Casual Conversation": {
-        "role": "Friend",
-        "behavior": "Casual, friendly, and relaxed. Share personal anecdotes and ask about their day.",
-        "focus": "Building rapport and practicing everyday social interactions"
-    },
-    "Class Discussion": {
-        "role": "Classmate",
-        "behavior": "Engaged peer discussing academic topics. Ask thoughtful questions and share perspectives.",
-        "focus": "Academic discourse and collaborative learning communication"
-    },
-    "Team Collaboration": {
-        "role": "Colleague",
-        "behavior": "Collaborative team member working on a project. Discuss ideas, give feedback, and coordinate tasks.",
-        "focus": "Workplace collaboration and team communication"
-    },
-    "Manager Feedback": {
-        "role": "Manager",
-        "behavior": "Providing constructive feedback on performance. Balance positive reinforcement with areas for improvement.",
-        "focus": "Receiving and responding to professional feedback"
-    },
-    "Customer Service": {
-        "role": "Customer",
-        "behavior": "Customer with a concern or inquiry. Express needs clearly and respond to solutions offered.",
-        "focus": "Customer service interactions and problem-solving communication"
-    },
-    "Networking Event": {
-        "role": "Networking contact",
-        "behavior": "Professional at a networking event. Focus on building connections and exchanging professional information.",
-        "focus": "Professional networking and relationship building"
-    },
-    "Audience Member": {
-        "role": "Audience member",
-        "behavior": "Engaged audience member watching a presentation. Show interest through verbal and non-verbal cues.",
-        "focus": "Public speaking engagement and presentation skills"
-    },
-    "Mentorship Discussion": {
-        "role": "Mentor",
-        "behavior": "Experienced mentor providing guidance. Ask about goals and challenges while offering advice.",
-        "focus": "Mentorship conversations and career guidance discussions"
-    },
-    # Interview Preparation Scenarios (keeping existing categories)
-    "Tell Me About Yourself": {
-        "role": "Professional interviewer",
-        "behavior": "Warm but professional interviewer starting the conversation. Look for a coherent narrative connecting past experiences to the role.",
-        "focus": "Personal branding and career storytelling"
-    },
-    "Behavioral Questions (STAR)": {
-        "role": "Professional interviewer",
-        "behavior": "Structured interviewer seeking specific examples using the STAR method. Probe for details and learning outcomes.",
-        "focus": "Behavioral interviewing and evidence-based responses"
-    },
-    "Strengths & Weaknesses": {
-        "role": "Professional interviewer",
-        "behavior": "Insightful interviewer assessing self-awareness and honesty. Look for genuine reflection and growth mindset.",
-        "focus": "Self-awareness and authentic self-assessment"
-    },
-    "Why This Role / Company": {
-        "role": "Professional interviewer",
-        "behavior": "Engaged interviewer evaluating motivation and cultural fit. Look for specific knowledge and genuine interest.",
-        "focus": "Motivation and organizational fit assessment"
-    },
-    "Technical Explanations": {
-        "role": "Technical interviewer",
-        "behavior": "Knowledgeable interviewer assessing depth of understanding. Ask follow-up questions to probe technical knowledge.",
-        "focus": "Technical communication and knowledge transfer"
-    },
-    "Handling Difficult Questions": {
-        "role": "Skilled interviewer",
-        "behavior": "Experienced interviewer posing challenging questions. Evaluate composure, problem-solving, and professionalism under pressure.",
-        "focus": "Resilience and thoughtful responses under pressure"
-    },
-    "Career Goals & Aspirations": {
-        "role": "Forward-looking interviewer",
-        "behavior": "Interested interviewer exploring long-term vision and ambition. Look for clarity of purpose and realistic planning.",
-        "focus": "Career planning and aspirational communication"
-    },
-    "Salary & Negotiation Talk": {
-        "role": "Negotiation-savvy interviewer",
-        "behavior": "Business-minded interviewer discussing compensation. Evaluate preparation, market knowledge, and collaborative problem-solving.",
-        "focus": "Negotiation skills and professional self-advocacy"
-    }
-}
-
-
-def get_mode_from_metadata(metadata: dict) -> str:
-    """Extract mode from metadata, defaulting to general communication"""
-    mode = metadata.get("mode", "general")
-    if mode not in MODES:
-        mode = "general"
-    return mode
-
-
-def get_scenario_behavior(category: str, mode: str) -> dict:
-    """Get scenario-specific behavior guidelines for a category and mode"""
-    # Check if we have specific behavior defined
-    if category in SCENARIO_BEHAVIORS:
-        return SCENARIO_BEHAVIORS[category]
-
-    # Fallback to generic behavior based on mode
-    mode_info = MODES.get(mode, MODES["general"])
-    role = "Friend" if mode == "general" else "Professional interviewer"
-
-    if mode == "general":
-        behavior = f"Engaging in a {category.lower()} conversation as a {role.lower()}."
-        focus = f"Practicing communication skills in {category.lower()} context"
-    else:
-        behavior = f"Conducting a {category.lower()} interview as a professional interviewer."
-        focus = f"Developing interview skills for {category.lower()}"
-
-    return {
-        "role": role,
-        "behavior": behavior,
-        "focus": focus
-    }
-
-
-def build_coaching_prompt(category: str, mode: str, user_identity: str, exchange_count: int) -> str:
-    """Build the agent's prompt based on core identity, mode, scenario, and session context"""
-    mode_info = MODES[mode]
-    scenario = get_scenario_behavior(category, mode)
-
-    # Build the core identity section
-    core_identity = CORE_IDENTITY.strip()
-
-    # Build the mode-specific section
-    mode_section = f"""
-Current Mode: {mode_info['name']}
-Objective: {mode_info['objective']}
-Your Role: {scenario['role']}
-Role Behavior: {scenario['behavior']}
-Conversation Style: {mode_info['style']}
-"""
-
-    # Build the coaching responsibilities section
-    coaching_section = """
-COACHING RESPONSIBILITIES:
-- Continuously observe: confidence, clarity, fluency, vocabulary, grammar, tone, listening, professionalism, response structure, speaking pace, filler words, engagement
-- Provide gentle, constructive feedback only when appropriate and beneficial
-- Do not interrupt excessively - let the user express their thoughts
-- Ask follow-up questions naturally based on what the user says
-- React authentically to user responses with appropriate verbal cues
-- Share opinions and perspectives when it enhances the conversation
-- Encourage the user to elaborate and explore topics in depth
-- After the session, provide comprehensive coaching feedback covering all observed communication aspects
-"""
-
-    # Build the conversation style guidelines
-    style_section = f"""
-CONVERSATION STYLE GUIDELINES:
-- Avoid rigid, scripted questioning patterns
-- Respond naturally to what the user says, like a real {scenario['role'].lower()} would
-- Ask open-ended follow-up questions that encourage elaboration
-- Show genuine curiosity about the user's experiences and perspectives
-- Mirror the user's communication style while maintaining your role
-- Use natural conversational fillers and expressions appropriately
-- Encourage longer, more thoughtful responses when beneficial
-- If in {mode} mode, remember this is practice for real-world {mode_info['description'].lower()}
-"""
-
-    # Add vision context placeholder
-    vision_section = "\nVISUAL CONTEXT: [Visual information will be provided here when available]"
-
-    # Combine all sections
-    full_prompt = f"""{core_identity}
-
-{mode_section.strip()}
-
-{coaching_section.strip()}
-
-{style_section.strip()}{vision_section}
-
-IMPORTANT:
-- Stay in character as {scenario['role']} throughout the conversation
-- Your primary goal is to help {user_identity} improve their communication skills through this interaction
-- Keep your responses conversational and natural - typically 1-3 sentences unless the situation calls for more
-- Always end your turn with an invitation for the user to respond (a question, prompt, or expression that encourages continuation)
-"""
-
-    return full_prompt.strip()
-
 
 class InterviewAgent(Agent):
-    def __init__(self, category: str, user_identity: str, metadata: dict = None):
+    def __init__(self, mode: str, category: str, user_identity: str):
+        self.mode = mode
         self.category = category
         self.user_identity = user_identity
-        self.metadata = metadata or {}
-        self.mode = get_mode_from_metadata(self.metadata)
         self.exchange_count = 0
         self.max_exchanges = 6
         self.current_emotion = {}
 
-        # Build dynamic instructions
-        instructions = build_coaching_prompt(category, self.mode, user_identity, self.exchange_count)
-
+        instructions = build_coaching_prompt(category, mode, user_identity, self.exchange_count)
         super().__init__(instructions=instructions)
 
-        logger.info(f"Initialized InterviewAgent - Category: {category}, Mode: {self.mode}, User: {user_identity}")
+        logger.info("Agent initialized - mode=%s category=%s user=%s", mode, category, user_identity)
 
 
 EVAL_CLIENT = AsyncOpenAI(
@@ -559,7 +353,8 @@ async def entrypoint(ctx: JobContext):
         video_sampler=video_sampler,
     )
 
-    agent = InterviewAgent(category, user_identity, metadata)
+    mode = get_mode_from_metadata(metadata)
+    agent = InterviewAgent(mode, category, user_identity)
     current_question = ""
 
     @session.on("agent_state_changed")
@@ -575,6 +370,7 @@ async def entrypoint(ctx: JobContext):
 
         agent.exchange_count += 1
         transcript = item.content
+        eliciting_prompt = current_question  # Store the prompt that elicited this response
 
         async def process():
             nonlocal current_question
@@ -585,7 +381,7 @@ async def entrypoint(ctx: JobContext):
                 result = await evaluate_user_response(
                     transcript,
                     agent.exchange_count - 1,
-                    current_question,
+                    eliciting_prompt,
                     category,
                     mode,
                     video_context=vision_ctx,
@@ -625,6 +421,7 @@ async def entrypoint(ctx: JobContext):
                     {
                         "type": "evaluation",
                         "exchange_number": agent.exchange_count,
+                        "eliciting_prompt": eliciting_prompt,
                         "transcript": transcript,
                         "evaluation": eval_entry,
                         "feedback": result.get("feedback", ""),
@@ -640,7 +437,7 @@ async def entrypoint(ctx: JobContext):
 
                 if is_last:
                     logger.info("Session complete for user %s", user_identity)
-                    send_data(ctx.room, {"type": "complete"}, user_identity)
+                    send_data(ctx.room, {"type": "complete", "exchange_count": agent.exchange_count}, user_identity)
                     ctx.shutdown()
 
             except Exception as e:
@@ -651,23 +448,8 @@ async def entrypoint(ctx: JobContext):
 
     await session.start(room=ctx.room, agent=agent)
 
-    vision_instructions = ""
-    if vision_service.get_camera_active() or vision_service.get_screen_active():
-        vision_instructions = (
-            f"\n\nVisual context: {vision_service.get_context()}"
-        )
-
-    mode = agent.mode
-    mode_name = MODES[mode]['name']
-
-    if mode == "interview_prep":
-        await session.generate_reply(
-            instructions=f"Greet the candidate warmly and ask the first interview question about {category}. Keep it natural and conversational.{vision_instructions}"
-        )
-    else:
-        await session.generate_reply(
-            instructions=f"Greet the person warmly and start the {category} communication scenario. Set up the situation naturally and prompt them to respond. Keep it natural and conversational.{vision_instructions}"
-        )
+    greeting = build_greeting_instructions(agent.mode, category)
+    await session.generate_reply(instructions=greeting)
 
     try:
         await asyncio.Future()
